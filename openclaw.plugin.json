@@ -1,0 +1,23 @@
+{
+  "id": "openclaw-desktop-companion",
+  "name": "OpenClaw Desktop Companion",
+  "description": "Connects OpenClaw Gateway agents to local OpenClaw Desktop capabilities.",
+  "version": "0.1.0",
+  "contracts": {
+    "tools": [
+      "desktop_artifact_create",
+      "desktop_artifact_update",
+      "desktop_artifact_append",
+      "desktop_artifact_open"
+    ]
+  },
+  "activation": {
+    "onStartup": true
+  },
+  "skills": ["skills"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
