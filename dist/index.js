@@ -7,6 +7,11 @@ import {
   PLUGIN_ID,
   createStatusPayload,
 } from './companion-protocol.js';
+import {
+  runCompanionPluginReinstallCli,
+  runCompanionPluginUninstallCli,
+  runPluginListCli,
+} from './plugin-inventory.js';
 
 const artifactCreateParameters = {
   type: 'object',
@@ -88,6 +93,9 @@ function registerGatewayMethods(api) {
       accepted: true,
       taskId: asObject(params).taskId,
     }),
+    'desktopCompanion.plugins.list': (_ctx, params) => runPluginListCli(params),
+    'desktopCompanion.plugin.reinstall': (_ctx, params) => runCompanionPluginReinstallCli(params),
+    'desktopCompanion.plugin.uninstall': (_ctx, params) => runCompanionPluginUninstallCli(params),
   };
 
   for (const [name, handler] of Object.entries(methods)) {
