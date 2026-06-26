@@ -44,6 +44,8 @@ const artifactIdParameters = {
 
 let repositoryContext = null;
 const observedArtifacts = new Set();
+const sessionRepositoryContexts = new Map();
+const MAX_SESSION_REPOSITORY_CONTEXTS = 200;
 
 function asObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
@@ -111,6 +113,40 @@ function artifactHash(value) {
   return (hash >>> 0).toString(16);
 }
 
+function getEventSessionKey(event) {
+  return event?.ctx?.sessionKey ?? event?.sessionKey ?? 'unknown-session';
+}
+
+function getEventRunId(event) {
+  return event?.runId ?? event?.ctx?.runId ?? 'unknown-run';
+}
+
+function buildSessionRepositoryContextKey(sessionKey, runId) {
+  return `${sessionKey}:${runId}`;
+}
+
+function rememberSessionRepositoryContext(event, context) {
+  const sessionKey = getEventSessionKey(event);
+  const runId = getEventRunId(event);
+  if (sessionKey === 'unknown-session' && runId === 'unknown-run') {
+    return;
+  }
+
+  sessionRepositoryContexts.set(buildSessionRepositoryContextKey(sessionKey, runId), { ...context });
+  if (sessionRepositoryContexts.size > MAX_SESSION_REPOSITORY_CONTEXTS) {
+    const oldestKey = sessionRepositoryContexts.keys().next().value;
+    if (oldestKey) {
+      sessionRepositoryContexts.delete(oldestKey);
+    }
+  }
+}
+
+function getSessionRepositoryContext(sessionKey, runId) {
+  return sessionRepositoryContexts.get(buildSessionRepositoryContextKey(sessionKey, runId))
+    ?? sessionRepositoryContexts.get(buildSessionRepositoryContextKey(sessionKey, 'unknown-run'))
+    ?? null;
+}
+
 function normalizeRepositoryContextPayload(params) {
   const payload = asObject(params);
   const requiredStringFields = ['instanceId', 'bindingId', 'repoPath', 'agentsMdContent', 'agentsMdHash'];
@@ -148,13 +184,6 @@ function getRepositoryContextMetadata(context) {
     agentsMdHash: context.agentsMdHash,
     updatedAt: context.updatedAt,
   };
-}
-
-function repositoryContextBoundaryChanged(currentContext, nextContext) {
-  return !currentContext
-    || currentContext.instanceId !== nextContext.instanceId
-    || currentContext.bindingId !== nextContext.bindingId
-    || currentContext.repoPath !== nextContext.repoPath;
 }
 
 function renderRepositorySystemContext(payload) {
@@ -233,7 +262,6 @@ function registerGatewayMethods(api) {
         };
       }
 
-      const shouldResetObservedArtifacts = repositoryContextBoundaryChanged(repositoryContext, nextContext);
       const unchanged = Boolean(
         repositoryContext
           && repositoryContext.instanceId === nextContext.instanceId
@@ -242,9 +270,6 @@ function registerGatewayMethods(api) {
           && repositoryContext.agentsMdHash === nextContext.agentsMdHash,
       );
       repositoryContext = nextContext;
-      if (shouldResetObservedArtifacts) {
-        observedArtifacts.clear();
-      }
       return {
         ok: true,
         status: unchanged ? 'unchanged' : 'updated',
@@ -264,6 +289,7 @@ function registerGatewayMethods(api) {
       if (shouldClear) {
         repositoryContext = null;
         observedArtifacts.clear();
+        sessionRepositoryContexts.clear();
       }
       return {
         ok: true,
@@ -558,10 +584,11 @@ export default definePluginEntry({
     registerRepositoryTools(api);
     registerOutputTools(api);
     if (typeof api.on === 'function') {
-      api.on('before_prompt_build', async () => {
+      api.on('before_prompt_build', async (event) => {
         if (!repositoryContext) {
           return undefined;
         }
+        rememberSessionRepositoryContext(event, repositoryContext);
 
         return {
           appendSystemContext: renderRepositorySystemContext(repositoryContext),
@@ -572,22 +599,31 @@ export default definePluginEntry({
           return;
         }
 
+        const sessionKey = getEventSessionKey(event);
+        const runId = getEventRunId(event);
+        const context = getSessionRepositoryContext(sessionKey, runId) ?? repositoryContext;
         const text = extractText(event?.message ?? event?.messages ?? event?.output ?? event);
         const artifact = extractExplicitArtifact(text);
         if (!artifact) {
           return;
         }
 
-        const sessionKey = event?.ctx?.sessionKey ?? event?.sessionKey ?? 'unknown-session';
-        const runId = event?.runId ?? event?.ctx?.runId ?? 'unknown-run';
-        const key = `${sessionKey}:${runId}:${artifact.title}:${artifactHash(artifact.html)}`;
+        const key = [
+          context.instanceId,
+          context.bindingId,
+          context.repoPath,
+          sessionKey,
+          runId,
+          artifact.title,
+          artifactHash(artifact.html),
+        ].join(':');
         if (observedArtifacts.has(key)) {
           return;
         }
 
         try {
           const result = await invokeDesktopNode(api, 'desktop.outputs.create', {
-            repoPath: repositoryContext.repoPath,
+            repoPath: context.repoPath,
             title: artifact.title,
             type: artifact.type,
             html: artifact.html,

@@ -554,6 +554,56 @@ test('agent_end scopes artifact idempotency to repository context', async () => 
   assert.equal(calls[1].payload.params.repoPath, '/repo-b');
 });
 
+test('agent_end uses repository context captured for the session prompt', async () => {
+  const plugin = (await importPluginEntryForTest()).default;
+  const calls = [];
+  const { api, gatewayMethods, hooks } = createFakeApi({
+    gatewayRequest(method, payload) {
+      calls.push({ method, payload });
+      return { ok: true, echoed: payload };
+    },
+  });
+  plugin.register(api);
+
+  const set = gatewayMethods.get('desktopCompanion.repositoryContext.set');
+  const beforePromptBuild = hooks.get('before_prompt_build');
+  const agentEnd = hooks.get('agent_end');
+
+  assert.equal(set(null, {
+    version: 1,
+    instanceId: 'instance-a',
+    bindingId: 'binding-a',
+    repoPath: '/repo-a',
+    agentsMdContent: '# Rules A',
+    agentsMdHash: 'hash-a',
+    updatedAt: 123,
+  }).ok, true);
+  await beforePromptBuild({ ctx: { sessionKey: 'session-old' } });
+
+  assert.equal(set(null, {
+    version: 1,
+    instanceId: 'instance-b',
+    bindingId: 'binding-b',
+    repoPath: '/repo-b',
+    agentsMdContent: '# Rules B',
+    agentsMdHash: 'hash-b',
+    updatedAt: 124,
+  }).ok, true);
+
+  await agentEnd({
+    ctx: { sessionKey: 'session-old', runId: 'run-old' },
+    message: '<artifact>{"title":"Old Session Output"}<main>old html</main></artifact>',
+  });
+  await agentEnd({
+    ctx: { sessionKey: 'session-old', runId: 'run-old' },
+    message: '<artifact>{"title":"Old Session Output"}<main>old html</main></artifact>',
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].payload.params.repoPath, '/repo-a');
+  assert.equal(calls[0].payload.params.title, 'Old Session Output');
+});
+
 test('agent_end does not mark artifacts observed when Desktop output creation fails', async () => {
   const plugin = (await importPluginEntryForTest()).default;
   const calls = [];
