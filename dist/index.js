@@ -4,7 +4,9 @@ import {
   CAPABILITIES,
   DESKTOP_NODE_CAPS,
   DESKTOP_NODE_COMMANDS,
+  OUTPUT_TOOLS,
   PLUGIN_ID,
+  REPOSITORY_TOOLS,
   createStatusPayload,
 } from './companion-protocol.js';
 import {
@@ -271,6 +273,206 @@ function registerArtifactTools(api) {
   });
 }
 
+function registerForwardingTool(api, options) {
+  api.registerTool({
+    name: options.name,
+    description: options.description,
+    parameters: options.parameters,
+    async execute(_id, params) {
+      const args = asObject(params);
+      for (const field of options.requiredStrings) {
+        if (typeof args[field] !== 'string' || args[field].trim() === '') {
+          return validationError(`${field} is required`);
+        }
+      }
+
+      return toolResult(await invokeDesktopNode(api, options.command, args));
+    },
+  });
+}
+
+function registerRepositoryTools(api) {
+  const repoPathParameters = {
+    type: 'object',
+    additionalProperties: true,
+    properties: {
+      repoPath: { type: 'string', description: 'Repository absolute path.' },
+    },
+    required: ['repoPath'],
+  };
+  const repoPathAndPathParameters = {
+    type: 'object',
+    additionalProperties: true,
+    properties: {
+      repoPath: { type: 'string', description: 'Repository absolute path.' },
+      path: { type: 'string', description: 'Repository-relative file path.' },
+    },
+    required: ['repoPath', 'path'],
+  };
+
+  const definitions = [
+    {
+      name: REPOSITORY_TOOLS[0],
+      description: 'Read repository status from the connected OpenClaw Desktop app.',
+      command: 'desktop.repository.status',
+      parameters: repoPathParameters,
+      requiredStrings: ['repoPath'],
+    },
+    {
+      name: REPOSITORY_TOOLS[1],
+      description: 'Read a repository file through the connected OpenClaw Desktop app.',
+      command: 'desktop.repository.read',
+      parameters: repoPathAndPathParameters,
+      requiredStrings: ['repoPath', 'path'],
+    },
+    {
+      name: REPOSITORY_TOOLS[2],
+      description: 'Search repository files through the connected OpenClaw Desktop app.',
+      command: 'desktop.repository.search',
+      parameters: {
+        type: 'object',
+        additionalProperties: true,
+        properties: {
+          repoPath: { type: 'string', description: 'Repository absolute path.' },
+          query: { type: 'string', description: 'Search query.' },
+          directories: { type: 'array', items: { type: 'string' } },
+        },
+        required: ['repoPath', 'query'],
+      },
+      requiredStrings: ['repoPath', 'query'],
+    },
+    {
+      name: REPOSITORY_TOOLS[3],
+      description: 'Write a repository file through the connected OpenClaw Desktop app.',
+      command: 'desktop.repository.write',
+      parameters: {
+        type: 'object',
+        additionalProperties: true,
+        properties: {
+          repoPath: { type: 'string', description: 'Repository absolute path.' },
+          path: { type: 'string', description: 'Repository-relative file path.' },
+          content: { type: 'string', description: 'File content.' },
+        },
+        required: ['repoPath', 'path', 'content'],
+      },
+      requiredStrings: ['repoPath', 'path', 'content'],
+    },
+    {
+      name: REPOSITORY_TOOLS[4],
+      description: 'Read git status for a repository through the connected OpenClaw Desktop app.',
+      command: 'desktop.repository.git.status',
+      parameters: repoPathParameters,
+      requiredStrings: ['repoPath'],
+    },
+    {
+      name: REPOSITORY_TOOLS[5],
+      description: 'Read git diff for a repository through the connected OpenClaw Desktop app.',
+      command: 'desktop.repository.git.diff',
+      parameters: repoPathParameters,
+      requiredStrings: ['repoPath'],
+    },
+    {
+      name: REPOSITORY_TOOLS[6],
+      description: 'Read git log for a repository path through the connected OpenClaw Desktop app.',
+      command: 'desktop.repository.git.log',
+      parameters: {
+        type: 'object',
+        additionalProperties: true,
+        properties: {
+          repoPath: { type: 'string', description: 'Repository absolute path.' },
+          path: { type: 'string', description: 'Repository-relative path.' },
+          limit: { type: 'number', description: 'Optional maximum number of commits.' },
+        },
+        required: ['repoPath', 'path'],
+      },
+      requiredStrings: ['repoPath', 'path'],
+    },
+    {
+      name: REPOSITORY_TOOLS[7],
+      description: 'Create a git commit through the connected OpenClaw Desktop app.',
+      command: 'desktop.repository.git.commit',
+      parameters: {
+        type: 'object',
+        additionalProperties: true,
+        properties: {
+          repoPath: { type: 'string', description: 'Repository absolute path.' },
+          message: { type: 'string', description: 'Commit message.' },
+        },
+        required: ['repoPath', 'message'],
+      },
+      requiredStrings: ['repoPath', 'message'],
+    },
+  ];
+
+  for (const definition of definitions) {
+    registerForwardingTool(api, definition);
+  }
+}
+
+function registerOutputTools(api) {
+  const outputCreateParameters = {
+    ...artifactCreateParameters,
+    additionalProperties: true,
+    properties: {
+      repoPath: { type: 'string', description: 'Repository absolute path.' },
+      ...artifactCreateParameters.properties,
+    },
+    required: ['repoPath', 'title', 'html'],
+  };
+
+  const definitions = [
+    {
+      name: OUTPUT_TOOLS[0],
+      description: 'Create a Desktop output artifact for a repository.',
+      command: 'desktop.outputs.create',
+      parameters: outputCreateParameters,
+      requiredStrings: ['repoPath', 'title', 'html'],
+    },
+    {
+      name: OUTPUT_TOOLS[1],
+      description: 'Open an existing Desktop output artifact.',
+      command: 'desktop.outputs.open',
+      parameters: artifactIdParameters,
+      requiredStrings: ['artifactId'],
+    },
+    {
+      name: OUTPUT_TOOLS[2],
+      description: 'Update a Desktop output artifact for a repository.',
+      command: 'desktop.outputs.update',
+      parameters: {
+        type: 'object',
+        additionalProperties: true,
+        properties: {
+          repoPath: { type: 'string', description: 'Repository absolute path.' },
+          artifactId: { type: 'string', description: 'Desktop artifact id.' },
+        },
+        required: ['repoPath', 'artifactId'],
+      },
+      requiredStrings: ['repoPath', 'artifactId'],
+    },
+    {
+      name: OUTPUT_TOOLS[3],
+      description: 'Append HTML to an existing Desktop output artifact.',
+      command: 'desktop.outputs.append',
+      parameters: {
+        type: 'object',
+        additionalProperties: true,
+        properties: {
+          repoPath: { type: 'string', description: 'Repository absolute path.' },
+          artifactId: { type: 'string', description: 'Desktop artifact id.' },
+          htmlChunk: { type: 'string', description: 'HTML fragment to append.' },
+        },
+        required: ['repoPath', 'artifactId', 'htmlChunk'],
+      },
+      requiredStrings: ['repoPath', 'artifactId', 'htmlChunk'],
+    },
+  ];
+
+  for (const definition of definitions) {
+    registerForwardingTool(api, definition);
+  }
+}
+
 export default definePluginEntry({
   id: PLUGIN_ID,
   name: 'OpenClaw Desktop Companion',
@@ -278,6 +480,8 @@ export default definePluginEntry({
   register(api) {
     registerGatewayMethods(api);
     registerArtifactTools(api);
+    registerRepositoryTools(api);
+    registerOutputTools(api);
     if (typeof api.on === 'function') {
       api.on('before_prompt_build', async () => {
         if (!repositoryContext) {

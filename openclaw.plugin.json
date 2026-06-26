@@ -8,7 +8,19 @@
       "desktop_artifact_create",
       "desktop_artifact_update",
       "desktop_artifact_append",
-      "desktop_artifact_open"
+      "desktop_artifact_open",
+      "desktop_repository_status",
+      "desktop_repository_read",
+      "desktop_repository_search",
+      "desktop_repository_write",
+      "desktop_repository_git_status",
+      "desktop_repository_git_diff",
+      "desktop_repository_git_log",
+      "desktop_repository_git_commit",
+      "desktop_outputs_create",
+      "desktop_outputs_open",
+      "desktop_outputs_update",
+      "desktop_outputs_append"
     ]
   },
   "activation": {

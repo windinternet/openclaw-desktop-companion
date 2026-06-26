@@ -28,11 +28,18 @@ async function importPluginEntryForTest() {
   return import(moduleUrl);
 }
 
-function createFakeApi({ withOn = true } = {}) {
+function createFakeApi({ withOn = true, gatewayRequest } = {}) {
   const gatewayMethods = new Map();
   const tools = [];
   const hooks = new Map();
   const api = {
+    runtime: gatewayRequest
+      ? {
+        gateway: {
+          request: gatewayRequest,
+        },
+      }
+      : undefined,
     registerGatewayMethod(name, handler) {
       gatewayMethods.set(name, handler);
     },
@@ -50,13 +57,16 @@ function createFakeApi({ withOn = true } = {}) {
   return { api, gatewayMethods, tools, hooks };
 }
 
-test('manifest declares the Desktop artifact tools from the protocol', async () => {
+test('manifest declares all Desktop agent tools from the protocol', async () => {
   const manifest = readJson('openclaw.plugin.json');
   const protocol = await import(pathToFileURL(join(root, 'dist/companion-protocol.js')));
 
   assert.equal(manifest.id, protocol.PLUGIN_ID);
   assert.equal(manifest.version, protocol.PLUGIN_VERSION);
-  assert.deepEqual(manifest.contracts.tools, protocol.ARTIFACT_TOOLS);
+  assert.deepEqual(manifest.contracts.tools, protocol.AGENT_TOOLS);
+  assert.ok(manifest.contracts.tools.includes('desktop_repository_read'));
+  assert.ok(manifest.contracts.tools.includes('desktop_outputs_create'));
+  assert.ok(manifest.contracts.tools.includes('desktop_artifact_create'));
   assert.deepEqual(manifest.skills, ['skills']);
 });
 
@@ -246,6 +256,86 @@ test('plugin entry registers repository context RPC methods and before prompt ho
   assert.match(source, /Invalid repository context payload/);
 });
 
+test('plugin entry registers tools in protocol order', async () => {
+  const plugin = (await importPluginEntryForTest()).default;
+  const protocol = await import(pathToFileURL(join(root, 'dist/companion-protocol.js')));
+  const { api, tools } = createFakeApi();
+
+  plugin.register(api);
+
+  assert.deepEqual(tools.map((tool) => tool.name), protocol.AGENT_TOOLS);
+});
+
+test('repository and output tools forward to Desktop node commands and validate required params', async () => {
+  const plugin = (await importPluginEntryForTest()).default;
+  const protocol = await import(pathToFileURL(join(root, 'dist/companion-protocol.js')));
+  const calls = [];
+  const { api, tools } = createFakeApi({
+    gatewayRequest(method, payload) {
+      calls.push({ method, payload });
+      return { ok: true, echoed: payload };
+    },
+  });
+  plugin.register(api);
+  const byName = new Map(tools.map((tool) => [tool.name, tool]));
+  for (const name of protocol.REPOSITORY_TOOLS.concat(protocol.OUTPUT_TOOLS)) {
+    assert.equal(byName.get(name).parameters.additionalProperties, true, `${name} allows Desktop context params`);
+  }
+
+  const repositoryResult = await byName.get('desktop_repository_read').execute('call-a', {
+    repoPath: '/repo',
+    path: 'README.md',
+    gatewayInstanceId: 'gateway-a',
+  });
+  assert.deepEqual(calls.at(-1), {
+    method: 'node.invoke',
+    payload: {
+      command: 'desktop.repository.read',
+      params: {
+        repoPath: '/repo',
+        path: 'README.md',
+        gatewayInstanceId: 'gateway-a',
+      },
+    },
+  });
+  assert.equal(repositoryResult.details.ok, true);
+
+  const outputResult = await byName.get('desktop_outputs_append').execute('call-b', {
+    repoPath: '/repo',
+    artifactId: 'artifact-a',
+    htmlChunk: '<p>Next</p>',
+    gatewayInstanceId: 'gateway-a',
+  });
+  assert.deepEqual(calls.at(-1), {
+    method: 'node.invoke',
+    payload: {
+      command: 'desktop.outputs.append',
+      params: {
+        repoPath: '/repo',
+        artifactId: 'artifact-a',
+        htmlChunk: '<p>Next</p>',
+        gatewayInstanceId: 'gateway-a',
+      },
+    },
+  });
+  assert.equal(outputResult.details.ok, true);
+
+  const invalid = await byName.get('desktop_repository_read').execute('call-c', {
+    repoPath: '/repo',
+  });
+  assert.equal(invalid.details.ok, false);
+  assert.equal(invalid.details.error, 'invalid-params');
+
+  const blank = await byName.get('desktop_outputs_append').execute('call-d', {
+    repoPath: '/repo',
+    artifactId: 'artifact-a',
+    htmlChunk: '   ',
+  });
+  assert.equal(blank.details.ok, false);
+  assert.equal(blank.details.error, 'invalid-params');
+  assert.equal(calls.length, 2);
+});
+
 test('plugin repository context RPCs manage metadata and prompt context', async () => {
   const plugin = (await importPluginEntryForTest()).default;
   const { api, gatewayMethods, hooks } = createFakeApi();
@@ -319,15 +409,11 @@ test('plugin repository context RPCs manage metadata and prompt context', async 
 
 test('plugin register works without api.on and still registers base RPCs and tools', async () => {
   const plugin = (await importPluginEntryForTest()).default;
+  const protocol = await import(pathToFileURL(join(root, 'dist/companion-protocol.js')));
   const { api, gatewayMethods, tools } = createFakeApi({ withOn: false });
 
   assert.doesNotThrow(() => plugin.register(api));
   assert.equal(gatewayMethods.has('desktopCompanion.status'), true);
   assert.equal(gatewayMethods.has('desktopCompanion.repositoryContext.set'), true);
-  assert.deepEqual(tools.map((tool) => tool.name), [
-    'desktop_artifact_create',
-    'desktop_artifact_update',
-    'desktop_artifact_append',
-    'desktop_artifact_open',
-  ]);
+  assert.deepEqual(tools.map((tool) => tool.name), protocol.AGENT_TOOLS);
 });

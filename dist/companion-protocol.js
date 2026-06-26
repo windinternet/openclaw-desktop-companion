@@ -35,6 +35,26 @@ export const ARTIFACT_TOOLS = [
   'desktop_artifact_open',
 ];
 
+export const REPOSITORY_TOOLS = [
+  'desktop_repository_status',
+  'desktop_repository_read',
+  'desktop_repository_search',
+  'desktop_repository_write',
+  'desktop_repository_git_status',
+  'desktop_repository_git_diff',
+  'desktop_repository_git_log',
+  'desktop_repository_git_commit',
+];
+
+export const OUTPUT_TOOLS = [
+  'desktop_outputs_create',
+  'desktop_outputs_open',
+  'desktop_outputs_update',
+  'desktop_outputs_append',
+];
+
+export const AGENT_TOOLS = ARTIFACT_TOOLS.concat(REPOSITORY_TOOLS, OUTPUT_TOOLS);
+
 export function createStatusPayload(overrides = {}) {
   return {
     ok: true,
