@@ -40,8 +40,63 @@ const artifactIdParameters = {
   required: ['artifactId'],
 };
 
+let repositoryContext = null;
+
 function asObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function normalizeRepositoryContextPayload(params) {
+  const payload = asObject(params);
+  const requiredStringFields = ['instanceId', 'bindingId', 'repoPath', 'agentsMdContent', 'agentsMdHash'];
+  if (payload.version !== 1) {
+    return null;
+  }
+
+  for (const field of requiredStringFields) {
+    if (typeof payload[field] !== 'string') {
+      return null;
+    }
+  }
+
+  return {
+    version: 1,
+    instanceId: payload.instanceId,
+    bindingId: payload.bindingId,
+    repoPath: payload.repoPath,
+    agentsMdContent: payload.agentsMdContent,
+    agentsMdHash: payload.agentsMdHash,
+    updatedAt: typeof payload.updatedAt === 'number' ? payload.updatedAt : Date.now(),
+  };
+}
+
+function getRepositoryContextMetadata(context) {
+  if (!context) {
+    return null;
+  }
+
+  return {
+    version: context.version,
+    instanceId: context.instanceId,
+    bindingId: context.bindingId,
+    repoPath: context.repoPath,
+    agentsMdHash: context.agentsMdHash,
+    updatedAt: context.updatedAt,
+  };
+}
+
+function renderRepositorySystemContext(payload) {
+  return [
+    '## OpenClaw Desktop Bound Repository',
+    '',
+    'This is bound repository rule and entry context supplied by OpenClaw Desktop. It is not a user message for the current turn.',
+    '',
+    'Repository absolute path:',
+    payload.repoPath,
+    '',
+    'Repository AGENTS.md:',
+    payload.agentsMdContent,
+  ].join('\n');
 }
 
 function toolResult(value) {
@@ -96,6 +151,50 @@ function registerGatewayMethods(api) {
     'desktopCompanion.plugins.list': (_ctx, params) => runPluginListCli(params),
     'desktopCompanion.plugin.reinstall': (_ctx, params) => runCompanionPluginReinstallCli(params),
     'desktopCompanion.plugin.uninstall': (_ctx, params) => runCompanionPluginUninstallCli(params),
+    'desktopCompanion.repositoryContext.set': (_ctx, params) => {
+      const nextContext = normalizeRepositoryContextPayload(params);
+      if (!nextContext) {
+        return {
+          ok: false,
+          error: 'invalid-params',
+          message: 'Invalid repository context payload',
+        };
+      }
+
+      const unchanged = Boolean(
+        repositoryContext
+          && repositoryContext.instanceId === nextContext.instanceId
+          && repositoryContext.bindingId === nextContext.bindingId
+          && repositoryContext.repoPath === nextContext.repoPath
+          && repositoryContext.agentsMdHash === nextContext.agentsMdHash,
+      );
+      repositoryContext = nextContext;
+      return {
+        ok: true,
+        status: unchanged ? 'unchanged' : 'updated',
+        agentsMdHash: nextContext.agentsMdHash,
+        context: getRepositoryContextMetadata(repositoryContext),
+      };
+    },
+    'desktopCompanion.repositoryContext.get': () => ({
+      ok: true,
+      context: getRepositoryContextMetadata(repositoryContext),
+    }),
+    'desktopCompanion.repositoryContext.clear': (_ctx, params) => {
+      const bindingId = asObject(params).bindingId;
+      const shouldClear = typeof bindingId !== 'string'
+        || !repositoryContext
+        || repositoryContext.bindingId === bindingId;
+      if (shouldClear) {
+        repositoryContext = null;
+      }
+      return {
+        ok: true,
+        status: 'cleared',
+        cleared: shouldClear,
+        context: getRepositoryContextMetadata(repositoryContext),
+      };
+    },
   };
 
   for (const [name, handler] of Object.entries(methods)) {
@@ -179,5 +278,16 @@ export default definePluginEntry({
   register(api) {
     registerGatewayMethods(api);
     registerArtifactTools(api);
+    if (typeof api.on === 'function') {
+      api.on('before_prompt_build', async () => {
+        if (!repositoryContext) {
+          return undefined;
+        }
+
+        return {
+          appendSystemContext: renderRepositorySystemContext(repositoryContext),
+        };
+      });
+    }
   },
 });
