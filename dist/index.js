@@ -43,9 +43,72 @@ const artifactIdParameters = {
 };
 
 let repositoryContext = null;
+const observedArtifacts = new Set();
 
 function asObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function extractText(value) {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => extractText(item)).filter(Boolean).join('\n');
+  }
+
+  if (value && typeof value === 'object') {
+    const candidate = value.text
+      ?? value.content
+      ?? value.value
+      ?? value.message
+      ?? value.output_text;
+    return extractText(candidate);
+  }
+
+  return '';
+}
+
+function extractExplicitArtifact(text) {
+  const match = /<artifact>\s*(\{[\s\S]*?\})\s*([\s\S]*?)<\/artifact>/i.exec(text);
+  if (!match) {
+    return null;
+  }
+
+  let metadata;
+  try {
+    metadata = JSON.parse(match[1]);
+  } catch {
+    return null;
+  }
+
+  if (typeof metadata.title !== 'string' || metadata.title.trim() === '') {
+    return null;
+  }
+
+  const html = match[2].trim();
+  if (html === '') {
+    return null;
+  }
+
+  return {
+    title: metadata.title.trim(),
+    type: typeof metadata.type === 'string' && metadata.type.trim() !== '' ? metadata.type : 'other',
+    icon: typeof metadata.icon === 'string' ? metadata.icon : undefined,
+    description: typeof metadata.description === 'string' ? metadata.description : undefined,
+    tags: Array.isArray(metadata.tags) ? metadata.tags.filter((tag) => typeof tag === 'string') : [],
+    html,
+  };
+}
+
+function artifactHash(value) {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16);
 }
 
 function normalizeRepositoryContextPayload(params) {
@@ -85,6 +148,13 @@ function getRepositoryContextMetadata(context) {
     agentsMdHash: context.agentsMdHash,
     updatedAt: context.updatedAt,
   };
+}
+
+function repositoryContextBoundaryChanged(currentContext, nextContext) {
+  return !currentContext
+    || currentContext.instanceId !== nextContext.instanceId
+    || currentContext.bindingId !== nextContext.bindingId
+    || currentContext.repoPath !== nextContext.repoPath;
 }
 
 function renderRepositorySystemContext(payload) {
@@ -163,6 +233,7 @@ function registerGatewayMethods(api) {
         };
       }
 
+      const shouldResetObservedArtifacts = repositoryContextBoundaryChanged(repositoryContext, nextContext);
       const unchanged = Boolean(
         repositoryContext
           && repositoryContext.instanceId === nextContext.instanceId
@@ -171,6 +242,9 @@ function registerGatewayMethods(api) {
           && repositoryContext.agentsMdHash === nextContext.agentsMdHash,
       );
       repositoryContext = nextContext;
+      if (shouldResetObservedArtifacts) {
+        observedArtifacts.clear();
+      }
       return {
         ok: true,
         status: unchanged ? 'unchanged' : 'updated',
@@ -189,6 +263,7 @@ function registerGatewayMethods(api) {
         || repositoryContext.bindingId === bindingId;
       if (shouldClear) {
         repositoryContext = null;
+        observedArtifacts.clear();
       }
       return {
         ok: true,
@@ -491,6 +566,43 @@ export default definePluginEntry({
         return {
           appendSystemContext: renderRepositorySystemContext(repositoryContext),
         };
+      });
+      api.on('agent_end', async (event) => {
+        if (!repositoryContext) {
+          return;
+        }
+
+        const text = extractText(event?.message ?? event?.messages ?? event?.output ?? event);
+        const artifact = extractExplicitArtifact(text);
+        if (!artifact) {
+          return;
+        }
+
+        const sessionKey = event?.ctx?.sessionKey ?? event?.sessionKey ?? 'unknown-session';
+        const runId = event?.runId ?? event?.ctx?.runId ?? 'unknown-run';
+        const key = `${sessionKey}:${runId}:${artifact.title}:${artifactHash(artifact.html)}`;
+        if (observedArtifacts.has(key)) {
+          return;
+        }
+
+        try {
+          const result = await invokeDesktopNode(api, 'desktop.outputs.create', {
+            repoPath: repositoryContext.repoPath,
+            title: artifact.title,
+            type: artifact.type,
+            html: artifact.html,
+            icon: artifact.icon,
+            description: artifact.description,
+            tags: artifact.tags,
+            sourceSessionKey: sessionKey,
+            sourceRunId: runId,
+          });
+          if (!result || result.ok !== false) {
+            observedArtifacts.add(key);
+          }
+        } catch {
+          // Session artifact observation is best-effort and must not affect agent completion.
+        }
       });
     }
   },

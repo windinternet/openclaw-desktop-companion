@@ -407,6 +407,189 @@ test('plugin repository context RPCs manage metadata and prompt context', async 
   assert.equal(await beforePromptBuild(), undefined);
 });
 
+test('agent_end observes explicit session artifacts only when repository context is bound', async () => {
+  const plugin = (await importPluginEntryForTest()).default;
+  const calls = [];
+  const { api, gatewayMethods, hooks } = createFakeApi({
+    gatewayRequest(method, payload) {
+      calls.push({ method, payload });
+      return { ok: true, echoed: payload };
+    },
+  });
+  plugin.register(api);
+
+  const set = gatewayMethods.get('desktopCompanion.repositoryContext.set');
+  const clear = gatewayMethods.get('desktopCompanion.repositoryContext.clear');
+  const agentEnd = hooks.get('agent_end');
+  assert.equal(typeof agentEnd, 'function');
+
+  clear(null, {});
+  await agentEnd({
+    sessionKey: 'session-a',
+    runId: 'run-a',
+    message: '<artifact>{"title":"Ignored"}</artifact><main>ignored</main>',
+  });
+  assert.equal(calls.length, 0);
+
+  const repoContext = {
+    version: 1,
+    instanceId: 'instance-a',
+    bindingId: 'binding-a',
+    repoPath: '/repo',
+    agentsMdContent: '# Rules',
+    agentsMdHash: 'hash-a',
+    updatedAt: 123,
+  };
+  assert.equal(set(null, repoContext).ok, true);
+
+  await agentEnd({
+    ctx: { sessionKey: 'session-a', runId: 'run-a' },
+    messages: [
+      { content: ['Intro ', { text: '<artifact>{"title":"Session Report","type":"dashboard","icon":"chart","description":"Done","tags":["task-9",7,"artifact"]}' }] },
+      { message: '<section>hello</section></artifact>' },
+    ],
+  });
+
+  assert.deepEqual(calls, [{
+    method: 'node.invoke',
+    payload: {
+      command: 'desktop.outputs.create',
+      params: {
+        repoPath: '/repo',
+        title: 'Session Report',
+        type: 'dashboard',
+        html: '<section>hello</section>',
+        icon: 'chart',
+        description: 'Done',
+        tags: ['task-9', 'artifact'],
+        sourceSessionKey: 'session-a',
+        sourceRunId: 'run-a',
+      },
+    },
+  }]);
+
+  await agentEnd({
+    ctx: { sessionKey: 'session-a', runId: 'run-a' },
+    output: {
+      value: [
+        '<artifact>{"title":"Session Report","type":"dashboard","icon":"chart","description":"Done","tags":["task-9","artifact"]}',
+        { output_text: '<section>hello</section></artifact>' },
+      ],
+    },
+  });
+  assert.equal(calls.length, 1);
+});
+
+test('agent_end ignores malformed explicit artifacts', async () => {
+  const plugin = (await importPluginEntryForTest()).default;
+  const calls = [];
+  const { api, gatewayMethods, hooks } = createFakeApi({
+    gatewayRequest(method, payload) {
+      calls.push({ method, payload });
+      return { ok: true, echoed: payload };
+    },
+  });
+  plugin.register(api);
+
+  gatewayMethods.get('desktopCompanion.repositoryContext.set')(null, {
+    version: 1,
+    instanceId: 'instance-a',
+    bindingId: 'binding-a',
+    repoPath: '/repo',
+    agentsMdContent: '# Rules',
+    agentsMdHash: 'hash-a',
+    updatedAt: 123,
+  });
+
+  const agentEnd = hooks.get('agent_end');
+  await agentEnd({ message: '<artifact>{"title": }<p>bad json</p></artifact>' });
+  await agentEnd({ message: '<artifact>{"type":"report"}</artifact><p>missing title</p>' });
+  await agentEnd({ message: '<artifact>{"title":"Blank"}</artifact>   ' });
+
+  assert.equal(calls.length, 0);
+});
+
+test('agent_end scopes artifact idempotency to repository context', async () => {
+  const plugin = (await importPluginEntryForTest()).default;
+  const calls = [];
+  const { api, gatewayMethods, hooks } = createFakeApi({
+    gatewayRequest(method, payload) {
+      calls.push({ method, payload });
+      return { ok: true, echoed: payload };
+    },
+  });
+  plugin.register(api);
+
+  const set = gatewayMethods.get('desktopCompanion.repositoryContext.set');
+  const artifactEvent = {
+    ctx: { sessionKey: 'session-same', runId: 'run-same' },
+    message: '<artifact>{"title":"Same Output"}<main>same html</main></artifact>',
+  };
+
+  assert.equal(set(null, {
+    version: 1,
+    instanceId: 'instance-a',
+    bindingId: 'binding-a',
+    repoPath: '/repo-a',
+    agentsMdContent: '# Rules',
+    agentsMdHash: 'hash-a',
+    updatedAt: 123,
+  }).ok, true);
+  await hooks.get('agent_end')(artifactEvent);
+  await hooks.get('agent_end')(artifactEvent);
+
+  assert.equal(set(null, {
+    version: 1,
+    instanceId: 'instance-b',
+    bindingId: 'binding-b',
+    repoPath: '/repo-b',
+    agentsMdContent: '# Rules',
+    agentsMdHash: 'hash-b',
+    updatedAt: 124,
+  }).ok, true);
+  await hooks.get('agent_end')(artifactEvent);
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].payload.params.repoPath, '/repo-a');
+  assert.equal(calls[1].payload.params.repoPath, '/repo-b');
+});
+
+test('agent_end does not mark artifacts observed when Desktop output creation fails', async () => {
+  const plugin = (await importPluginEntryForTest()).default;
+  const calls = [];
+  const { api, gatewayMethods, hooks } = createFakeApi({
+    gatewayRequest(method, payload) {
+      calls.push({ method, payload });
+      if (calls.length === 1) {
+        throw new Error('temporary desktop failure');
+      }
+      return { ok: true, echoed: payload };
+    },
+  });
+  plugin.register(api);
+
+  gatewayMethods.get('desktopCompanion.repositoryContext.set')(null, {
+    version: 1,
+    instanceId: 'instance-a',
+    bindingId: 'binding-a',
+    repoPath: '/repo',
+    agentsMdContent: '# Rules',
+    agentsMdHash: 'hash-a',
+    updatedAt: 123,
+  });
+
+  const artifactEvent = {
+    sessionKey: 'session-retry',
+    runId: 'run-retry',
+    message: '<artifact>{"title":"Retry Output"}<main>retry html</main></artifact>',
+  };
+  await assert.doesNotReject(() => hooks.get('agent_end')(artifactEvent));
+  await hooks.get('agent_end')(artifactEvent);
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].payload.params.title, 'Retry Output');
+});
+
 test('plugin register works without api.on and still registers base RPCs and tools', async () => {
   const plugin = (await importPluginEntryForTest()).default;
   const protocol = await import(pathToFileURL(join(root, 'dist/companion-protocol.js')));
